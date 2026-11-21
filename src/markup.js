@@ -8,7 +8,9 @@
 //   because member names and puzzle titles come from outside.
 
 const FILL = 'width:100%;height:100%;min-width:0;min-height:0';
-const STYLE = '<style>.aoc-hero{flex:0 0 34%;min-width:0;min-height:0}.screen--portrait .aoc-hero{flex:0 0 auto}</style>';
+const STYLE =
+  '<style>.aoc-hero{flex:0 0 34%;min-width:0;min-height:0}.screen--portrait .aoc-hero{flex:0 0 auto}' +
+  '.screen--portrait .aoc-board{justify-content:flex-start!important}</style>';
 
 function esc(s) {
   return String(s).replace(
@@ -85,11 +87,22 @@ function bigStar() {
 // Pieces
 // ---------------------------------------------------------------------------
 
+// Type ramps. Base = TRMNL OG (800x480), lg: = TRMNL X, lg:portrait: = TRMNL X held upright, which has the most room
+// and gets the biggest type. The quadrant is the same size on X in either orientation, so it skips the portrait step.
 const T = {
-  label: 'label lg:label--large',
-  meta: 'description lg:description--large',
-  rowText: 'label lg:label--large',
-  rowNum: 'label lg:label--large value--tnums',
+  label: 'label lg:label--large lg:portrait:label--xlarge',
+  meta: 'description lg:description--large lg:portrait:description--xlarge',
+  rowText: 'label lg:label--large lg:portrait:label--xlarge',
+  rowNum: 'label lg:label--large lg:portrait:label--xlarge value--tnums',
+  statLabel: 'label label--small lg:label--base lg:portrait:label--large',
+  statValue: 'value value--xsmall lg:value--small lg:portrait:value--base value--tnums',
+  quadLabel: 'label lg:label--large',
+  quadNum: 'label lg:label--large value--tnums',
+};
+const HERO = {
+  large: { big: 'value value--xlarge lg:value--xxlarge lg:portrait:value--xxxlarge', sub: 'label label--large lg:label--xlarge lg:portrait:label--xxlarge', top: T.label },
+  medium: { big: 'value value--large lg:value--xlarge lg:portrait:value--xxlarge', sub: 'label lg:label--large lg:portrait:label--xlarge', top: T.label },
+  quad: { big: 'value value--large lg:value--xlarge', sub: 'label lg:label--large', top: T.quadLabel },
 };
 
 function titleBar(ctx, v) {
@@ -115,7 +128,7 @@ function pickRows(v, max) {
   return [...all.slice(0, max - 1), v.me];
 }
 
-function rows(v, max, { starRow = true, starClass = '', starEm = 1.15, starMax = '52%' } = {}) {
+function rows(v, max, { starRow = true, starClass = '', starEm = 1.15, starMax = '52%', text = T.rowText, num = T.rowNum } = {}) {
   if (!v.board) return '';
   const unlocked = unlockedDays(v);
   const list = pickRows(v, max);
@@ -126,16 +139,24 @@ function rows(v, max, { starRow = true, starClass = '', starEm = 1.15, starMax =
       return `<div class="flex flex--row" style="align-items:center;gap:8px;padding:1px 6px;border-radius:4px;${
         isMe ? 'outline:2px solid currentColor;outline-offset:-2px;' : ''
       }${gapBefore(m, i) ? 'border-top:1px dashed currentColor;' : ''}">
-<span class="${T.rowNum}" style="flex:none;width:2.2ch;text-align:right">${m.rank}</span>
-<span class="${T.rowText}" style="flex:1 1 0;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;${
+<span class="${num}" style="flex:none;width:2.2ch;text-align:right">${m.rank}</span>
+<span class="${text}" style="flex:1 1 0;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;${
         isMe ? 'font-weight:700' : ''
       }">${esc(m.name)}</span>
 ${starRow ? `<div class="${starClass}" style="flex:0 1 auto;width:calc(${m.perDay.length} * ${starEm}em);max-width:${starMax};min-width:0;height:${starEm}em">${starRowSvg(m.perDay, unlocked)}</div>` : ''}
-<span class="${T.rowNum}" style="flex:none;min-width:3.2ch;text-align:right;white-space:nowrap">${m.stars}${bigStar()}</span>
-${v.board.hasScores ? `<span class="${T.rowNum}" style="flex:none;min-width:3.6ch;text-align:right">${m.score}</span>` : ''}
+<span class="${num}" style="flex:none;min-width:3.2ch;text-align:right;white-space:nowrap">${m.stars}${bigStar()}</span>
+${v.board.hasScores ? `<span class="${num}" style="flex:none;min-width:3.6ch;text-align:right">${m.score}</span>` : ''}
 </div>`;
     })
     .join('');
+}
+
+// A longer list on TRMNL X, which has room for it. Two lists rather than hidden rows, so "your row last" stays right.
+function rowsByScreen(v, max, lgMax, opts) {
+  const base = rows(v, max, opts);
+  if (!v.board || v.board.members.length <= max) return `<div class="flex flex--col" style="gap:inherit;align-items:stretch">${base}</div>`;
+  return `<div class="flex flex--col lg:hidden" style="gap:inherit;align-items:stretch">${base}</div>
+<div class="hidden lg:flex flex--col" style="gap:inherit;align-items:stretch">${rows(v, lgMax, opts)}</div>`;
 }
 
 function boardHeading(v) {
@@ -150,11 +171,10 @@ function boardHeading(v) {
 
 // The big statement: today's day, the countdown, or the final tally.
 function hero(v, ctx, size = 'large') {
-  const big = size === 'large' ? 'value value--xlarge lg:value--xxlarge' : 'value value--large lg:value--xlarge';
-  const sub = size === 'large' ? 'label label--large lg:label--xlarge' : 'label lg:label--large';
+  const { big, sub, top } = HERO[size];
   const t = v.timing;
   if (t.phase === 'before') {
-    return `<span class="${T.label}">Advent of Code ${v.year} starts in</span>
+    return `<span class="${top}">Advent of Code ${v.year} starts in</span>
 <span class="${big} value--tnums" style="white-space:nowrap">${esc(countdown(t.nextUnlock - ctx.now))}</span>
 <span class="${sub}">Day 1 · Dec 1, ${esc(clock(t.nextUnlock, ctx.timeZone))}</span>`;
   }
@@ -162,20 +182,20 @@ function hero(v, ctx, size = 'large') {
     ? `<span class="${sub}" style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:100%">${esc(v.today.title)}</span>`
     : '';
   if (t.phase === 'running') {
-    return `<span class="${T.label}">Advent of Code ${v.year}</span>
+    return `<span class="${top}">Advent of Code ${v.year}</span>
 <span class="${big}">Day ${t.today}</span>
 ${title}
 <span class="${sub}" style="margin-top:4px">Day ${t.nextDay} in&nbsp;<b>${esc(countdown(t.nextUnlock - ctx.now))}</b>&nbsp;· ${esc(clock(t.nextUnlock, ctx.timeZone))}</span>`;
   }
-  return `<span class="${T.label}">Advent of Code ${v.year}</span>
+  return `<span class="${top}">Advent of Code ${v.year}</span>
 <span class="${big}">Final</span>
 <span class="${sub}">All ${t.today} days out</span>`;
 }
 
 function stat(name, value) {
   return `<div class="flex flex--col" style="align-items:center;gap:0;min-width:0">
-<span class="label label--small lg:label--base">${esc(name)}</span>
-<span class="value value--xsmall lg:value--small value--tnums">${value}</span>
+<span class="${T.statLabel}">${esc(name)}</span>
+<span class="${T.statValue}">${value}</span>
 </div>`;
 }
 
@@ -194,7 +214,7 @@ function todayLine(v, ctx) {
   if (!v.today || !v.board) return '';
   const n = v.board.members.length;
   const first = v.today.first ? ` · first: ${v.today.first.name} ${clock(v.today.first.at, ctx.timeZone)}` : '';
-  return `<span class="label lg:label--large">${v.today.finished} of ${n} finished day ${v.today.day}${esc(first)}</span>`;
+  return `<span class="${T.label}">${v.today.finished} of ${n} finished day ${v.today.day}${esc(first)}</span>`;
 }
 
 function staleLine(v, ctx) {
@@ -217,9 +237,9 @@ function full(v, ctx) {
     ${todayLine(v, ctx)}
     ${staleLine(v, ctx)}
   </div>
-  <div class="flex flex--col" style="flex:1 1 0;min-width:0;min-height:0;justify-content:center;align-items:stretch;gap:3px;overflow:hidden">
+  <div class="aoc-board flex flex--col" style="flex:1 1 0;min-width:0;min-height:0;justify-content:center;align-items:stretch;gap:3px;overflow:hidden">
     ${boardHeading(v)}
-    ${rows(v, 10)}
+    ${rowsByScreen(v, 10, 16)}
   </div>
 </div>
 </div>
@@ -251,7 +271,7 @@ function halfVertical(v, ctx) {
 <div class="flex flex--col gap--small" style="${FILL};align-items:stretch;justify-content:center;overflow:hidden">
   <div class="flex flex--col" style="gap:2px">${hero(v, ctx, 'medium')}</div>
   ${meStats(v)}
-  <div class="flex flex--col" style="gap:2px;min-height:0;overflow:hidden;margin-top:6px;align-items:stretch">${rows(v, 8, { starRow, starEm: 0.85, starMax: '36%' })}</div>
+  <div class="flex flex--col" style="gap:2px;min-height:0;overflow:hidden;margin-top:6px;align-items:stretch">${rowsByScreen(v, 8, 12, { starRow, starClass: 'portrait:hidden', starEm: 0.85, starMax: '36%' })}</div>
 </div>
 </div>
 ${titleBar(ctx, v)}
@@ -262,8 +282,9 @@ function quadrant(v, ctx) {
   return `<div class="view view--quadrant">${STYLE}
 <div class="layout">
 <div class="flex flex--col" style="${FILL};justify-content:center;gap:2px;overflow:hidden">
-  ${hero(v, ctx, 'medium')}
+  ${hero(v, ctx, 'quad')}
   ${v.me && v.board ? `<span class="value value--xsmall lg:value--small value--tnums">#${v.me.rank} · ${v.me.stars}/${v.board.days * 2} ${bigStar()}</span>` : ''}
+  ${v.board ? `<div class="hidden lg:flex flex--col" style="gap:2px;margin-top:10px;align-self:stretch">${rows(v, 3, { starRow: false, text: T.quadLabel, num: T.quadNum })}</div>` : ''}
 </div>
 </div>
 ${titleBar(ctx, v)}

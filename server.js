@@ -72,14 +72,14 @@ app.post('/webhooks/install-success', (req, res) => {
   const user = req.body?.user;
   if (!user?.uuid || !UUID_RE.test(user.uuid)) return res.status(400).json({ error: 'No user data' });
   store.update(user.uuid, { plugin_setting_id: user.plugin_setting_id ?? null });
-  console.log('Install success for user', user.uuid);
+  console.log('Install success');
   res.json({ success: true });
 });
 
 app.post('/webhooks/uninstall', (req, res) => {
   const uuid = req.body?.user?.uuid || req.body?.uuid;
   if (uuid) store.delete(uuid); // drops the stored session cookie too
-  console.log('Uninstall for user', uuid || '(unknown)');
+  console.log('Uninstall');
   res.json({ success: true });
 });
 
@@ -195,8 +195,22 @@ app.post('/manage/save', async (req, res) => {
 // Screen generation
 // ---------------------------------------------------------------------------
 
+// TRMNL metadata arrives either as nested form keys (trmnl[user][...]) or as one JSON string in the "trmnl" field.
+function trmnlMeta(raw) {
+  if (raw && typeof raw === 'object') return raw;
+  if (typeof raw === 'string' && raw.length < 50000) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch {
+      /* not JSON: ignore */
+    }
+  }
+  return {};
+}
+
 app.post('/markup', async (req, res) => {
-  const trmnl = req.body?.trmnl || {};
+  const trmnl = trmnlMeta(req.body?.trmnl);
   const uuid = req.body?.user_uuid || trmnl.user?.uuid;
   const cfg = uuid ? store.get(uuid) : ENV_CONFIG;
   try {

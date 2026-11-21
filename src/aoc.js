@@ -170,7 +170,7 @@ async function getBoard(cfg, { now = Date.now(), fetcher = fetchLeaderboard } = 
       })
       .catch((err) => {
         e.error = err.code || 'network';
-        console.error(`AoC fetch ${cfg.year}/${cfg.boardId} failed: ${err.message}`);
+        console.error(`AoC fetch ${cfg.year} failed: ${err.message}`);
       })
       .finally(() => {
         e.inflight = null;
