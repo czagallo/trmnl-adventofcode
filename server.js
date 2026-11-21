@@ -77,8 +77,9 @@ app.post('/webhooks/install-success', (req, res) => {
 });
 
 app.post('/webhooks/uninstall', (req, res) => {
-  const uuid = req.body?.user?.uuid || req.body?.uuid;
-  if (uuid) store.delete(uuid); // drops the stored session cookie too
+  const uuid = String(req.body?.user?.uuid || req.body?.uuid || '');
+  if (!UUID_RE.test(uuid)) return res.status(400).json({ error: 'No user data' });
+  store.delete(uuid); // drops the stored session cookie too
   console.log('Uninstall');
   res.json({ success: true });
 });
@@ -211,8 +212,9 @@ function trmnlMeta(raw) {
 
 app.post('/markup', async (req, res) => {
   const trmnl = trmnlMeta(req.body?.trmnl);
-  const uuid = req.body?.user_uuid || trmnl.user?.uuid;
-  const cfg = uuid ? store.get(uuid) : ENV_CONFIG;
+  const raw = req.body?.user_uuid || trmnl.user?.uuid;
+  // No uuid at all: local testing with .env. A uuid that is not one: nobody's settings, so the setup message.
+  const cfg = !raw ? ENV_CONFIG : UUID_RE.test(String(raw)) ? store.get(String(raw)) : null;
   try {
     const v = await buildView(cfg);
     res.json(

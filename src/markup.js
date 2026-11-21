@@ -51,6 +51,25 @@ function dateTime(ms, timeZone) {
   }
 }
 
+// The calendar date of a moment in the user's zone, as a sortable "YYYY-MM-DD".
+function localDate(ms, timeZone) {
+  const opts = { year: 'numeric', month: '2-digit', day: '2-digit' };
+  try {
+    return new Date(ms).toLocaleDateString('en-CA', { ...opts, timeZone: timeZone || 'UTC' });
+  } catch {
+    return new Date(ms).toLocaleDateString('en-CA', { ...opts, timeZone: 'UTC' });
+  }
+}
+
+// When something happens, relative to now in the user's zone: "today 21:00", "tomorrow 06:00" or "30 Nov, 23:00".
+// Puzzles unlock at 05:00 UTC, which is the evening before in the Americas, so a bare time or date can mislead.
+function when(ms, now, timeZone) {
+  const day = localDate(ms, timeZone);
+  if (day === localDate(now, timeZone)) return `today ${clock(ms, timeZone)}`;
+  if (day === localDate(now + 24 * 3600e3, timeZone)) return `tomorrow ${clock(ms, timeZone)}`;
+  return dateTime(ms, timeZone);
+}
+
 // ---------------------------------------------------------------------------
 // Graphics
 // ---------------------------------------------------------------------------
@@ -102,7 +121,8 @@ const T = {
 const HERO = {
   large: { big: 'value value--xlarge lg:value--xxlarge lg:portrait:value--xxxlarge', sub: 'label label--large lg:label--xlarge lg:portrait:label--xxlarge', top: T.label },
   medium: { big: 'value value--large lg:value--xlarge lg:portrait:value--xxlarge', sub: 'label lg:label--large lg:portrait:label--xlarge', top: T.label },
-  quad: { big: 'value value--large lg:value--xlarge', sub: 'label lg:label--large', top: T.quadLabel },
+  // The quadrant leaves out the unlock clock: the countdown says enough, and X needs the room for its standings.
+  quad: { big: 'value value--large lg:value--xlarge', sub: 'label lg:label--large', top: T.quadLabel, clock: false },
 };
 
 function titleBar(ctx, v) {
@@ -140,7 +160,7 @@ function rows(v, max, { starRow = true, starClass = '', starEm = 1.15, starMax =
         isMe ? 'outline:2px solid currentColor;outline-offset:-2px;' : ''
       }${gapBefore(m, i) ? 'border-top:1px dashed currentColor;' : ''}">
 <span class="${num}" style="flex:none;width:2.2ch;text-align:right">${m.rank}</span>
-<span class="${text}" style="flex:1 1 0;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;${
+<span class="${text}" style="display:block;flex:1 1 0;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;${
         isMe ? 'font-weight:700' : ''
       }">${esc(m.name)}</span>
 ${starRow ? `<div class="${starClass}" style="flex:0 1 auto;width:calc(${m.perDay.length} * ${starEm}em);max-width:${starMax};min-width:0;height:${starEm}em">${starRowSvg(m.perDay, unlocked)}</div>` : ''}
@@ -151,12 +171,19 @@ ${v.board.hasScores ? `<span class="${num}" style="flex:none;min-width:3.6ch;tex
     .join('');
 }
 
-// A longer list on TRMNL X, which has room for it. Two lists rather than hidden rows, so "your row last" stays right.
-function rowsByScreen(v, max, lgMax, opts) {
-  const base = rows(v, max, opts);
-  if (!v.board || v.board.members.length <= max) return `<div class="flex flex--col" style="gap:inherit;align-items:stretch">${base}</div>`;
-  return `<div class="flex flex--col lg:hidden" style="gap:inherit;align-items:stretch">${base}</div>
-<div class="hidden lg:flex flex--col" style="gap:inherit;align-items:stretch">${rows(v, lgMax, opts)}</div>`;
+// A longer list on TRMNL X, which has room for it; X held upright (portrait) can take a different count, because
+// the hero sits above the list there. Separate lists rather than hidden rows, so "your row last" stays right.
+function rowsByScreen(v, max, lgMax, opts, lgPortraitMax = lgMax) {
+  const col = 'style="gap:inherit;align-items:stretch"';
+  const n = v.board ? v.board.members.length : 0;
+  if (n <= Math.min(max, lgMax, lgPortraitMax)) return `<div class="flex flex--col" ${col}>${rows(v, max, opts)}</div>`;
+  if (lgPortraitMax === lgMax || n <= Math.min(lgMax, lgPortraitMax)) {
+    return `<div class="flex flex--col lg:hidden" ${col}>${rows(v, max, opts)}</div>
+<div class="hidden lg:flex flex--col" ${col}>${rows(v, lgMax, opts)}</div>`;
+  }
+  return `<div class="flex flex--col lg:hidden" ${col}>${rows(v, max, opts)}</div>
+<div class="hidden lg:flex lg:portrait:hidden flex--col" ${col}>${rows(v, lgMax, opts)}</div>
+<div class="hidden lg:portrait:flex flex--col" ${col}>${rows(v, lgPortraitMax, opts)}</div>`;
 }
 
 function boardHeading(v) {
@@ -169,23 +196,31 @@ function boardHeading(v) {
 </div>`;
 }
 
-// The big statement: today's day, the countdown, or the final tally.
+// The big statement: today's day, the countdown, or the final tally. One fact per row, so that narrow and short
+// layouts wrap nothing and TRMNL X can grow each row.
 function hero(v, ctx, size = 'large') {
-  const { big, sub, top } = HERO[size];
+  const { big, sub, top, clock: showClock = true } = HERO[size];
   const t = v.timing;
   if (t.phase === 'before') {
     return `<span class="${top}">Advent of Code ${v.year} starts in</span>
 <span class="${big} value--tnums" style="white-space:nowrap">${esc(countdown(t.nextUnlock - ctx.now))}</span>
-<span class="${sub}">Day 1 · Dec 1, ${esc(clock(t.nextUnlock, ctx.timeZone))}</span>`;
+<span class="${sub}">Day 1: ${esc(when(t.nextUnlock, ctx.now, ctx.timeZone))}</span>`;
   }
   const title = v.today && v.today.title
-    ? `<span class="${sub}" style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:100%">${esc(v.today.title)}</span>`
+    ? `<span class="${sub}" style="display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:100%">${esc(v.today.title)}</span>`
     : '';
+  if (t.phase === 'running' && t.last) {
+    return `<span class="${top}">Advent of Code ${v.year}</span>
+<span class="${big}">Day ${t.today}</span>
+${title}
+<span class="${top}" style="margin-top:4px">Last puzzle</span>`;
+  }
   if (t.phase === 'running') {
     return `<span class="${top}">Advent of Code ${v.year}</span>
 <span class="${big}">Day ${t.today}</span>
 ${title}
-<span class="${sub}" style="margin-top:4px">Day ${t.nextDay} in&nbsp;<b>${esc(countdown(t.nextUnlock - ctx.now))}</b>&nbsp;· ${esc(clock(t.nextUnlock, ctx.timeZone))}</span>`;
+<span class="${sub}" style="margin-top:4px;white-space:nowrap">Day ${t.nextDay} in&nbsp;<b>${esc(countdown(t.nextUnlock - ctx.now))}</b></span>
+${showClock ? `<span class="${top}" style="white-space:nowrap">${esc(when(t.nextUnlock, ctx.now, ctx.timeZone))}</span>` : ''}`;
   }
   return `<span class="${top}">Advent of Code ${v.year}</span>
 <span class="${big}">Final</span>
@@ -210,16 +245,21 @@ function meStats(v) {
   return `<div class="flex flex--row" style="justify-content:space-around;align-items:flex-start;border-top:1px solid currentColor;border-bottom:1px solid currentColor;padding:6px 0">${cells.join('')}</div>`;
 }
 
-function todayLine(v, ctx) {
+// How today's puzzle went, as two rows: the count, then who was first.
+function todayLines(v, ctx) {
   if (!v.today || !v.board) return '';
   const n = v.board.members.length;
-  const first = v.today.first ? ` · first: ${v.today.first.name} ${clock(v.today.first.at, ctx.timeZone)}` : '';
-  return `<span class="${T.label}">${v.today.finished} of ${n} finished day ${v.today.day}${esc(first)}</span>`;
+  const ell = 'display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:100%'; // block: .label is a flex box, which ignores text-overflow
+  const first = v.today.first
+    ? `<span class="${T.label}" style="${ell}">First: ${esc(v.today.first.name)}, ${esc(clock(v.today.first.at, ctx.timeZone))}</span>`
+    : '';
+  return `<span class="${T.label}">${v.today.finished} of ${n} finished day ${v.today.day}</span>
+${first}`;
 }
 
 function staleLine(v, ctx) {
   if (!v.error || !v.fetchedAt) return '';
-  return `<span class="${T.meta}">AoC unreachable · data from ${esc(dateTime(v.fetchedAt, ctx.timeZone))}</span>`;
+  return `<span class="${T.meta}">Last update ${esc(dateTime(v.fetchedAt, ctx.timeZone))}</span>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +267,8 @@ function staleLine(v, ctx) {
 // ---------------------------------------------------------------------------
 
 function full(v, ctx) {
+  // TRMNL X upright stacks the hero above the list: one row less for each extra hero line (countdown, stale note).
+  const lgPortraitRows = 13 - (v.timing.phase === 'running' && !v.timing.last ? 1 : 0) - (v.error && v.fetchedAt ? 1 : 0);
   return `<div class="view view--full">${STYLE}
 <div class="layout">
 <div class="flex flex--row portrait:flex--col gap--large" style="${FILL};align-items:stretch">
@@ -234,12 +276,12 @@ function full(v, ctx) {
     ${hero(v, ctx)}
     <div style="height:8px"></div>
     ${meStats(v)}
-    ${todayLine(v, ctx)}
+    ${todayLines(v, ctx)}
     ${staleLine(v, ctx)}
   </div>
   <div class="aoc-board flex flex--col" style="flex:1 1 0;min-width:0;min-height:0;justify-content:center;align-items:stretch;gap:3px;overflow:hidden">
     ${boardHeading(v)}
-    ${rowsByScreen(v, 10, 16)}
+    ${rowsByScreen(v, 10, 16, {}, lgPortraitRows)}
   </div>
 </div>
 </div>
@@ -301,10 +343,14 @@ const MESSAGES = {
 
 function message(view, v, ctx) {
   const [title, text] = MESSAGES[v.state === 'setup' ? 'setup' : v.error] || MESSAGES.network;
+  // Bigger on TRMNL X and bigger again upright, except the quadrant, which is the same size in both orientations.
+  const quad = view === 'quadrant';
+  const tCls = quad ? 'title lg:title--large' : 'title lg:title--xlarge lg:portrait:title--xxlarge';
+  const dCls = quad ? 'description lg:description--large' : 'description lg:description--xlarge lg:portrait:description--xxlarge';
   return `<div class="view view--${view}">
 <div class="layout layout--col layout--center" style="gap:6px">
-  <span class="title text--center">${esc(title)}</span>
-  <span class="description text--center">${esc(text)}</span>
+  <span class="${tCls} text--center">${esc(title)}</span>
+  <span class="${dCls} text--center" style="max-width:36em">${esc(text)}</span>
 </div>
 ${titleBar(ctx, v)}
 </div>`;
@@ -330,4 +376,4 @@ function renderAll(v, ctx) {
   };
 }
 
-module.exports = { renderAll, esc, countdown, clock, starRowSvg, pickRows };
+module.exports = { renderAll, esc, countdown, clock, when, starRowSvg, pickRows };

@@ -37,13 +37,15 @@ function currentEventYear(now = Date.now()) {
   return d.getUTCMonth() >= 10 ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
 }
 
-// Where the event stands: 'before' the first puzzle, 'running' while puzzles unlock, 'final' once all are out.
+// Where the event stands: 'before' the first puzzle, 'running' while puzzles unlock and for the 24 hours of the last
+// puzzle day (then nextDay/nextUnlock are null and `last` is true), 'final' once the last day is over.
 function timing(year, now = Date.now(), days = defaultDays(year)) {
   const start = unlockTime(year, 1);
-  if (now < start) return { phase: 'before', today: 0, nextDay: 1, nextUnlock: start };
+  if (now < start) return { phase: 'before', today: 0, nextDay: 1, nextUnlock: start, last: false };
   const today = Math.min(days, Math.floor((now - start) / DAY_MS) + 1);
-  if (today < days) return { phase: 'running', today, nextDay: today + 1, nextUnlock: unlockTime(year, today + 1) };
-  return { phase: 'final', today, nextDay: null, nextUnlock: null };
+  if (today < days) return { phase: 'running', today, nextDay: today + 1, nextUnlock: unlockTime(year, today + 1), last: false };
+  if (now < unlockTime(year, days) + DAY_MS) return { phase: 'running', today, nextDay: null, nextUnlock: null, last: true };
+  return { phase: 'final', today, nextDay: null, nextUnlock: null, last: false };
 }
 
 // Accepts "1234567", "1234567-abcdef12" (the join code) or the leaderboard URL.
@@ -143,7 +145,10 @@ async function fetchLeaderboard({ year, boardId, session }) {
 // Cache
 // ---------------------------------------------------------------------------
 
-const boards = new Map(); // key -> { data, fetchedAt, attemptedAt, error, inflight }
+// key -> { data, fetchedAt, attemptedAt, error, inflight }. Least recently used first; bounded so that boards of
+// uninstalled users or changed settings do not pile up for the life of the process.
+const boards = new Map();
+const MAX_BOARDS = 500;
 
 function boardKey({ year, boardId, session }) {
   const h = crypto.createHash('sha256').update(String(session)).digest('hex').slice(0, 16);
@@ -154,13 +159,23 @@ function minInterval(year, now) {
   return timing(year, now).phase === 'running' || new Date(now).getUTCMonth() === 11 ? MIN_FETCH_MS : IDLE_FETCH_MS;
 }
 
+// A blip (network/http) with nothing to show is retried after AoC's 15 minutes, not after the 3 idle hours.
+// A rejected session or a missing board will not fix itself, so those wait the normal interval.
+function retryInterval(e, year, now) {
+  if (!e.data && (e.error === 'network' || e.error === 'http')) return MIN_FETCH_MS;
+  return minInterval(year, now);
+}
+
 // Returns { data, fetchedAt, error }. Waits for the network only when nothing is cached yet.
 async function getBoard(cfg, { now = Date.now(), fetcher = fetchLeaderboard } = {}) {
   const key = boardKey(cfg);
   let e = boards.get(key);
-  if (!e) boards.set(key, (e = { data: null, fetchedAt: 0, attemptedAt: 0, error: null, inflight: null }));
+  if (e) boards.delete(key); // re-inserted below: most recently used last
+  else e = { data: null, fetchedAt: 0, attemptedAt: 0, error: null, inflight: null };
+  boards.set(key, e);
+  while (boards.size > MAX_BOARDS) boards.delete(boards.keys().next().value);
 
-  if (!e.inflight && now - e.attemptedAt >= minInterval(cfg.year, now)) {
+  if (!e.inflight && now - e.attemptedAt >= retryInterval(e, cfg.year, now)) {
     e.attemptedAt = now;
     e.inflight = fetcher(cfg)
       .then((data) => {
@@ -178,6 +193,10 @@ async function getBoard(cfg, { now = Date.now(), fetcher = fetchLeaderboard } = 
   }
   if (!e.data && e.inflight) await e.inflight;
   return { data: e.data, fetchedAt: e.fetchedAt, error: e.error };
+}
+
+function cacheSize() {
+  return boards.size;
 }
 
 function clearCache() {
@@ -234,6 +253,7 @@ module.exports = {
   AocError,
   DAY_MS,
   MIN_FETCH_MS,
+  MAX_BOARDS,
   defaultDays,
   unlockTime,
   currentEventYear,
@@ -245,6 +265,7 @@ module.exports = {
   fetchLeaderboard,
   getBoard,
   boardKey,
+  cacheSize,
   clearCache,
   parseTitle,
   puzzleTitle,

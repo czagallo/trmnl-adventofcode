@@ -6,7 +6,7 @@ to the next unlock.
 - **During the event:** today's day and puzzle title, a countdown to the next unlock in your time zone, your rank,
   stars and points, how many finished today and who was first
 - **Before Day 1:** a countdown to the start, next to last year's final standings
-- **Afterwards:** the final standings
+- **Last puzzle day:** that day and its title for the 24 hours after the final unlock, then the final standings
 - Star grid per member: filled star = both parts, outlined star = part one, dot = not solved
 - Your own row is always visible, even when you are below the top 10
 - Handles both formats: 12 puzzles (2025 onwards) and 25 puzzles (2015–2024)
@@ -27,7 +27,8 @@ In the plugin's settings page, enter:
 
 AoC asks automated tools to request a private leaderboard at most once every 15 minutes. The plugin caches every board
 per (year, leaderboard, session) and starts a new request only when the previous *attempt* is 15 minutes old, also
-after errors. Outside December it waits 3 hours. Puzzle titles are fetched once per day. Set `AOC_USER_AGENT` to
+after errors. Outside December it waits 3 hours, except when the very first fetch failed for a network or server
+reason: that is retried after 15 minutes. At most 500 boards are cached; the least recently used is dropped first. Puzzle titles are fetched once per day. Set `AOC_USER_AGENT` to
 something with a way to reach you, as AoC asks.
 
 ## Privacy

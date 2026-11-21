@@ -34,8 +34,13 @@ test('timing walks through before, running and final', () => {
   const d7 = aoc.timing(2026, Date.UTC(2026, 11, 8, 4, 0));
   assert.equal(d7.today, 7);
 
-  const fin = aoc.timing(2026, Date.UTC(2026, 11, 12, 5, 0));
-  assert.deepEqual([fin.phase, fin.today, fin.nextUnlock], ['final', 12, null]);
+  const last = aoc.timing(2026, Date.UTC(2026, 11, 12, 5, 0));
+  assert.deepEqual([last.phase, last.today, last.last, last.nextDay, last.nextUnlock], ['running', 12, true, null, null]);
+  assert.equal(aoc.timing(2026, Date.UTC(2026, 11, 13, 4, 59)).phase, 'running');
+
+  const fin = aoc.timing(2026, Date.UTC(2026, 11, 13, 5, 0));
+  assert.deepEqual([fin.phase, fin.today, fin.nextUnlock, fin.last], ['final', 12, null, false]);
+  assert.equal(aoc.timing(2024, Date.UTC(2024, 11, 25, 12), 25).last, true);
   assert.equal(aoc.timing(2024, Date.UTC(2024, 11, 20, 12), 25).phase, 'running');
 });
 
@@ -133,6 +138,61 @@ test('getBoard fetches at most once per 15 minutes per board, even when fetches 
   assert.equal(r.error, 'network');
   await aoc.getBoard(cfg, { now: now + 60e3, fetcher: bad });
   assert.equal(failing, 1);
+});
+
+test('a failed first fetch is retried after 15 minutes, even outside December; auth errors wait the full interval', async () => {
+  const now = Date.UTC(2026, 6, 1, 12); // July: the idle interval is 3 hours
+  const cfg = { ...CFG, year: 2025 };
+  for (const [code, retryAfter] of [['network', 15], ['http', 15], ['auth', 180], ['not_found', 180]]) {
+    aoc.clearCache();
+    let calls = 0;
+    const bad = async () => {
+      calls++;
+      throw new aoc.AocError(code, 'down');
+    };
+    await aoc.getBoard(cfg, { now, fetcher: bad });
+    await aoc.getBoard(cfg, { now: now + (retryAfter - 1) * 60e3, fetcher: bad });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(calls, 1, `${code}: no retry before ${retryAfter} min`);
+    await aoc.getBoard(cfg, { now: now + retryAfter * 60e3, fetcher: bad });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(calls, 2, `${code}: retried after ${retryAfter} min`);
+  }
+});
+
+test('a failed refresh with data cached waits the normal interval', async () => {
+  aoc.clearCache();
+  const now = Date.UTC(2026, 6, 1, 12);
+  const cfg = { ...CFG, year: 2025 };
+  let calls = 0;
+  await aoc.getBoard(cfg, { now, fetcher: async () => aoc.parseLeaderboard(samplePayload({ year: 2025 }), 2025) });
+  const bad = async () => {
+    calls++;
+    throw new aoc.AocError('network', 'down');
+  };
+  await aoc.getBoard(cfg, { now: now + 3 * H, fetcher: bad });
+  await new Promise((r) => setImmediate(r));
+  await aoc.getBoard(cfg, { now: now + 3 * H + 30 * 60e3, fetcher: bad });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 1);
+});
+
+test('the board cache is bounded and drops the least recently used board first', async () => {
+  aoc.clearCache();
+  const now = Date.UTC(2026, 11, 7, 12);
+  const fetcher = async (c) => aoc.parseLeaderboard(samplePayload(), c.year);
+  const cfg = (i) => ({ ...CFG, year: 2026, boardId: String(i) });
+  await aoc.getBoard(cfg(0), { now, fetcher });
+  for (let i = 1; i < aoc.MAX_BOARDS; i++) await aoc.getBoard(cfg(i), { now, fetcher });
+  await aoc.getBoard(cfg(0), { now, fetcher }); // touch the oldest: it becomes the newest
+  await aoc.getBoard(cfg(aoc.MAX_BOARDS), { now, fetcher });
+  assert.equal(aoc.cacheSize(), aoc.MAX_BOARDS);
+  let refetched = 0;
+  await aoc.getBoard(cfg(0), { now, fetcher: async () => (refetched++, fetcher(cfg(0))) });
+  assert.equal(refetched, 0, 'recently used board was kept');
+  await aoc.getBoard(cfg(1), { now, fetcher: async () => (refetched++, fetcher(cfg(1))) });
+  assert.equal(refetched, 1, 'least recently used board was evicted');
+  aoc.clearCache();
 });
 
 test('getBoard keeps serving the last good data when a refresh fails', async () => {
@@ -254,6 +314,90 @@ test('the user is shown even when ranked below the visible rows', async () => {
   assert.match(out.markup_half_horizontal, />dmr</);
 });
 
+// The visible text of a markup string, tags removed and whitespace collapsed.
+const text = (html) => html.replace(/<style[^>]*>.*?<\/style>/gs, '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ');
+
+test('the Day 1 unlock is shown on the user\'s local date and time', async () => {
+  const now = Date.UTC(2026, 10, 21, 12);
+  const v = await buildView(CFG, { now, getBoard: boardFrom(samplePayload({ year: 2025, solvedDays: 12 })), puzzleTitle: () => null });
+  const at = (timeZone) => text(renderAll(v, { baseUrl: 'https://x.example', timeZone, now }).markup);
+  assert.match(at('Europe/Vienna'), /Day 1: 1 Dec, 06:00/);
+  assert.match(at('America/New_York'), /Day 1: 1 Dec, 00:00/);
+  assert.match(at('America/Chicago'), /Day 1: 30 Nov, 23:00/);
+  assert.match(at('America/Los_Angeles'), /Day 1: 30 Nov, 21:00/);
+  assert.match(at('Pacific/Honolulu'), /Day 1: 30 Nov, 19:00/);
+  assert.match(at('Not/AZone'), /Day 1: 1 Dec, 05:00/);
+  // the evening before, the unlock is "today" for the Americas and "tomorrow" east of UTC-5
+  const eve = Date.UTC(2026, 10, 30, 22); // 14:00 in Los Angeles, 23:00 in Vienna
+  assert.match(text(renderAll(v, { baseUrl: 'https://x.example', timeZone: 'America/Los_Angeles', now: eve }).markup), /Day 1: today 21:00/);
+  assert.match(text(renderAll(v, { baseUrl: 'https://x.example', timeZone: 'Europe/Vienna', now: eve }).markup), /Day 1: tomorrow 06:00/);
+});
+
+test('the next unlock during the event says which local day it falls on', async () => {
+  const now = Date.UTC(2026, 11, 7, 14); // next unlock: Dec 8, 05:00 UTC
+  const v = await buildView(CFG, { now, getBoard: boardFrom(samplePayload({ year: 2026, solvedDays: 7 })), puzzleTitle: () => 'Laboratories' });
+  const at = (timeZone) => text(renderAll(v, { baseUrl: 'https://x.example', timeZone, now }).markup_half_horizontal);
+  assert.match(at('Europe/Vienna'), /Day 8 in 15h 00m tomorrow 06:00/);
+  assert.match(at('America/Los_Angeles'), /Day 8 in 15h 00m today 21:00/);
+});
+
+test('the last puzzle day shows that day and its title, the day after shows Final', async () => {
+  const opts = (now) => ({ now, getBoard: boardFrom(samplePayload({ year: 2026, solvedDays: 12 })), puzzleTitle: (y, d) => `Title ${d}` });
+  const lastNow = Date.UTC(2026, 11, 12, 20);
+  const last = await buildView(CFG, opts(lastNow));
+  assert.equal(last.today.title, 'Title 12');
+  const out = renderAll(last, { baseUrl: 'https://x.example', now: lastNow });
+  for (const k of LAYOUT_KEYS) {
+    assert.match(text(out[k]), /Day 12 Title 12 Last puzzle/, k);
+    assert.doesNotMatch(text(out[k]), /Final|days out|NaN|null/, k);
+  }
+  assert.match(text(out.markup), /2026 standings/);
+  assert.doesNotMatch(text(out.markup), /final standings/);
+
+  const finNow = Date.UTC(2026, 11, 13, 6);
+  const fin = renderAll(await buildView(CFG, opts(finNow)), { baseUrl: 'https://x.example', now: finNow });
+  assert.match(text(fin.markup), /Final All 12 days out/);
+  assert.match(text(fin.markup), /2026 final standings/);
+});
+
+test('half-horizontal puts each fact on its own row: no "A · B · C" lines', async () => {
+  for (const [name, v] of await views()) {
+    const out = renderAll(v, { baseUrl: 'https://x.example', timeZone: 'Europe/Vienna', now: Date.UTC(2026, 11, 7, 14) });
+    for (const k of LAYOUT_KEYS.filter((k) => k !== 'markup_quadrant')) {
+      assert.doesNotMatch(out[k], /·/, `${name} ${k}`);
+    }
+  }
+});
+
+test('TRMNL X portrait gets its own shorter list in the full view, still ending with the user\'s row', async () => {
+  const now = Date.UTC(2026, 11, 7, 14);
+  const v = await buildView({ ...CFG, memberId: '1012' }, { now, getBoard: boardFrom(samplePayload({ year: 2026, solvedDays: 7 })), puzzleTitle: () => null });
+  const out = renderAll(v, { baseUrl: 'https://x.example', now }).markup;
+  const portrait = out.slice(out.indexOf('class="hidden lg:portrait:flex flex--col"'));
+  assert.ok(out.includes('class="hidden lg:flex lg:portrait:hidden flex--col"'));
+  const portraitRows = portrait.split('<span class="label lg:label--large lg:portrait:label--xlarge value--tnums" style="flex:none;width:2.2ch').length - 1;
+  assert.equal(portraitRows, 12);
+  assert.match(portrait, />dmr</); // rank 13, shown as the last row
+});
+
+test('text that may be cut off is a block, so it ends in an ellipsis (the framework\'s .label is a flex box)', async () => {
+  const now = Date.UTC(2026, 11, 7, 14);
+  const v = await buildView(CFG, { now, getBoard: boardFrom(samplePayload({ year: 2026, solvedDays: 7 })), puzzleTitle: () => 'A title' });
+  const out = renderAll(v, { baseUrl: 'https://x.example', now });
+  for (const k of LAYOUT_KEYS) {
+    for (const m of out[k].matchAll(/style="([^"]*text-overflow:ellipsis[^"]*)"/g)) assert.match(m[1], /display:block/, k);
+  }
+});
+
+test('the quadrant leaves out the unlock clock line', async () => {
+  const now = Date.UTC(2026, 11, 7, 14);
+  const v = await buildView(CFG, { now, getBoard: boardFrom(samplePayload({ year: 2026, solvedDays: 7 })), puzzleTitle: () => null });
+  const out = renderAll(v, { baseUrl: 'https://x.example', timeZone: 'Europe/Vienna', now });
+  assert.doesNotMatch(text(out.markup_quadrant), /tomorrow/);
+  assert.match(text(out.markup_quadrant), /Day 8 in 15h 00m/);
+  assert.match(text(out.markup), /tomorrow 06:00/);
+});
+
 test('countdown formats days, hours and minutes', () => {
   assert.equal(countdown(11 * 24 * H + 20 * H), '11d 20h');
   assert.equal(countdown(14 * H + 20 * 60e3), '14h 20m');
@@ -276,4 +420,38 @@ test('store persists settings with owner-only permissions and forgets them on de
   a.delete('u1');
   assert.equal(createStore(file).get('u1'), null);
   fs.rmSync(dir, { recursive: true });
+});
+
+// ---------------------------------------------------------------------------
+// HTTP
+// ---------------------------------------------------------------------------
+
+test('/markup and /webhooks/uninstall reject malformed uuids', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aoc-http-'));
+  process.env.DATA_FILE = path.join(dir, 'connections.json');
+  delete require.cache[require.resolve('../src/store')];
+  delete require.cache[require.resolve('../server')];
+  const app = require('../server');
+  const server = await new Promise((r) => {
+    const s = app.listen(0, '127.0.0.1', () => r(s));
+  });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (p, body) =>
+    fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    for (const uuid of ['../../etc', 'a'.repeat(65), 'x y', '__proto__']) {
+      const r = await post('/markup', { trmnl: JSON.stringify({ user: { uuid } }) });
+      assert.equal(r.status, 200);
+      assert.match((await r.json()).markup, /Connect your leaderboard/, uuid);
+      assert.equal((await post('/webhooks/uninstall', { user: { uuid } })).status, 400, uuid);
+    }
+    assert.equal((await post('/webhooks/uninstall', {})).status, 400);
+    assert.equal((await post('/webhooks/uninstall', { user: { uuid: 'abc-123' } })).status, 200);
+    // a well-formed uuid without settings gets the setup message too, never the .env board
+    assert.match((await (await post('/markup', { user_uuid: 'abc-123' })).json()).markup, /Connect your leaderboard/);
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true });
+    delete process.env.DATA_FILE;
+  }
 });
